@@ -1,0 +1,47 @@
+# Ignore Terraform state files
+*.tfstate
+*.tfstate.*
+
+# Ignore Terraform plan files
+*.tfplan
+
+# Ignore Terraform variable files containing secrets
+*.tfvars
+*.tfvars.json
+
+# Ignore crash log files
+crash.log
+crash.*.log
+
+# Ignore Terraform lock file
+.terraform/
+.terraform.lock.hcl
+
+# Ignore Terragrunt cache
+.terragrunt-cache
+
+# Ignore Node.js dependencies
+node_modules/
+
+# Ignore build artifacts
+npm-debug.log
+yarn-error.log
+dist/ # TypeScript build output at root
+
+# Ignore OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Ignore VS Code settings
+.vscode/ 
+
+# Ignore .env file
+.env
+
+# Cursor settings
+.cursorrules
