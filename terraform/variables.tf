@@ -57,10 +57,29 @@ variable "cloud_run_sa_name" {
   default     = "vertex-proxy-run-sa"
 }
 
-variable "EXPECTED_API_KEY" {
-  description = "The secret API key clients must provide in the X-API-Key header."
+# Removed: API Key variable, handled by API Gateway
+# variable "EXPECTED_API_KEY" {
+#   description = "The secret API key clients must provide in the X-API-Key header."
+#   type        = string
+#   sensitive   = true # Marks the variable as sensitive in Terraform logs/outputs
+# }
+
+variable "api_gateway_api_name" {
+  description = "Name for the API Gateway API resource"
   type        = string
-  sensitive   = true # Marks the variable as sensitive in Terraform logs/outputs
+  default     = "vertex-proxy-apigw-api"
+}
+
+variable "api_gateway_config_name" {
+  description = "Base name for the API Gateway API Config resource (will have suffix)"
+  type        = string
+  default     = "vertex-proxy-apigw-config"
+}
+
+variable "api_gateway_gateway_name" {
+  description = "Name for the API Gateway Gateway resource"
+  type        = string
+  default     = "vertex-proxy-apigw-gateway"
 }
 
 # Removed: Variable for specific IP address firewall rule.
@@ -68,4 +87,11 @@ variable "EXPECTED_API_KEY" {
 #   description = "Your public IP address for firewall rule (e.g., 'x.x.x.x/32')"
 #   type        = string
 #   # default = "YOUR_IP_HERE/32" # Or fetch dynamically
-# } 
+# }
+
+# Variable for the API Key expected by the Cloud Run service
+variable "EXPECTED_API_KEY" {
+  description = "The secret API key the backend service expects in the X-API-Key header."
+  type        = string
+  sensitive   = true # Mark as sensitive
+} 

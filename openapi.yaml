@@ -1,0 +1,77 @@
+swagger: '2.0'
+info:
+  title: Vertex Proxy API
+  description: Proxies requests to Vertex AI Gemini via Cloud Run, secured by API Gateway.
+  version: 1.0.0
+schemes:
+  - https
+produces:
+  - application/json
+# Add the x-google-backend extension for Cloud Run integration
+# Requires the Cloud Run service URL
+# We will use a variable placeholder here, replaced by Terraform
+x-google-backend:
+  address: ${cloud_run_service_url} # Placeholder replaced by terraform
+  disable_auth: true # Keep explicit disable for backend call (might not be needed now)
+  # Path translation can be added if needed, but defaults work for now
+
+# --- REMOVED: API Gateway level API Key Validation ---
+# securityDefinitions:
+#   api_key:
+#     type: "apiKey"
+#     name: "x-api-key"
+#     in: "header"
+#
+# security:
+#   - api_key: []
+# --- END REMOVED ---
+
+paths:
+  /v1/chat:
+    post:
+      summary: Send chat request to Vertex AI Gemini
+      operationId: chatProxy
+      consumes:
+        - application/json
+      produces:
+        - application/json
+      parameters:
+        - in: body
+          name: body
+          description: Chat request payload
+          required: true
+          schema:
+            type: object
+            required:
+              - prompt
+            properties:
+              prompt:
+                type: string
+                description: The user's prompt.
+              history:
+                type: array
+                description: Optional chat history (Vertex AI format).
+                items:
+                  type: object
+                  properties:
+                    role:
+                      type: string
+                      enum: [user, model]
+                    parts:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          text:
+                            type: string
+      responses:
+        '200':
+          description: Successful response from Vertex AI
+          schema:
+            type: object # Define based on actual Gemini response structure if needed
+        '400':
+          description: Bad Request (e.g., missing prompt)
+        '403':
+          description: Forbidden (IAM permission issue calling backend)
+        '500':
+          description: Internal Server Error (Proxy or Vertex AI error) 

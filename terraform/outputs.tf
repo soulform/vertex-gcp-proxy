@@ -17,4 +17,9 @@ output "cloud_run_service_account_email" {
 output "cmek_key_name" {
   description = "Full resource name of the KMS key used for CMEK"
   value       = google_kms_crypto_key.cmek_key.id
+}
+
+output "api_gateway_url" {
+  description = "URL of the deployed API Gateway endpoint"
+  value       = google_api_gateway_gateway.gateway.default_hostname
 } 

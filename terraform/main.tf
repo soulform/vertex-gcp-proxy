@@ -55,11 +55,9 @@ resource "google_service_account" "cloud_run_sa" {
 }
 
 # Grants the Cloud Run Service Account permission to call the Vertex AI API.
-# TEMPORARY: Using broader role for debugging FAILED_PRECONDITION
 resource "google_project_iam_member" "run_sa_vertex_ai_user" {
   project = var.project_id
-  # role    = "roles/aiplatform.user"
-  role    = "roles/aiplatform.admin" # Temporarily broaden role
+  role    = "roles/aiplatform.user" # Revert back to standard user role
   member  = "serviceAccount:${google_service_account.cloud_run_sa.email}"
 }
 
@@ -125,107 +123,149 @@ resource "google_artifact_registry_repository" "repo" {
   ]
 }
 
-# --- Cloud Run (Definition Only - Image comes later) ---
-# Defines the Cloud Run service, configured for VPC access, CMEK, and specific environment variables.
-# The container image will be updated in Phase 5 after being built and pushed.
+# --- Cloud Run (Updated for API Gateway) ---
 resource "google_cloud_run_v2_service" "default" {
-  provider = google-beta # Use beta provider for potential new features like direct VPC egress
+  provider = google-beta
 
   name     = var.cloud_run_service_name
   location = var.region
-  ingress = "INGRESS_TRAFFIC_ALL" # Start with wide access for initial testing. SECURE LATER (e.g., INTERNAL_ONLY or INTERNAL_LOAD_BALANCER).
+  # Change ingress to allow all traffic, relying on backend auth
+  ingress = "INGRESS_TRAFFIC_ALL" # Changed from INTERNAL_ONLY
 
-  # Service configuration template
   template {
-    service_account = google_service_account.cloud_run_sa.email # Use the dedicated SA for runtime identity.
-    encryption_key = google_kms_crypto_key.cmek_key.id # Encrypt runtime state with CMEK.
+    service_account = google_service_account.cloud_run_sa.email
+    encryption_key = google_kms_crypto_key.cmek_key.id
 
-    # Add or modify labels to force an update
     labels = {
-      # Format timestamp to be GCP label compliant (lowercase, numbers, dash)
       "terraform-redeployed-at" = formatdate("YYYYMMDD-hhmmss", timestamp())
     }
 
-    # Configure VPC Access for private communication.
     vpc_access {
-      # Use built-in direct VPC egress (Recommended, GA).
-      # Connector field is omitted for direct egress.
-      egress = "ALL_TRAFFIC" # Allows egress through VPC to reach Google APIs privately.
+      egress = "ALL_TRAFFIC"
       network_interfaces {
         network    = google_compute_network.vpc_network.id
         subnetwork = google_compute_subnetwork.vpc_subnet.id
-        # tags       = ["cloud-run"] # Optional: Apply tags for firewall targeting if needed.
       }
     }
 
-    # Define the container(s) running in the service.
     containers {
-      # Use the image pushed to Artifact Registry in Phase 4.
       image = "${google_artifact_registry_repository.repo.location}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.repo.repository_id}/vertex-proxy:latest"
 
-      # Port the container listens on (must match EXPOSE in Dockerfile and app config).
       ports {
         container_port = 8080
       }
 
-      # Environment variables passed to the container.
-      # IMPORTANT: Use Secret Manager for EXPECTED_API_KEY in production.
+      # Add EXPECTED_API_KEY env var back for backend authentication
       env {
         name  = "EXPECTED_API_KEY"
-        value = var.EXPECTED_API_KEY # Reference the sensitive variable
+        # Ensure this variable is defined in variables.tf and set in secrets.tfvars
+        value = var.EXPECTED_API_KEY
       }
       env {
         name  = "GCP_PROJECT_ID"
-        value = var.project_id # Pass project ID to the application.
+        value = var.project_id
       }
       env {
         name  = "GCP_REGION"
-        value = var.region # Pass region to the application.
+        value = var.region
       }
        env {
-         # Pass the Vertex AI API endpoint based on the region.
         name = "VERTEX_AI_ENDPOINT"
         value = "${var.region}-aiplatform.googleapis.com"
       }
        env {
-        # Specify the target Vertex AI model ID.
         name = "VERTEX_AI_MODEL_ID"
-        # Use specific version from Model Garden
-        # value = "gemini-1.5-pro"
-        value = "gemini-1.5-pro-002"
+        value = "gemini-1.5-pro-002" # Use specific model ID
       }
-
-      # Define resource requests/limits if needed.
-      # resources {
-      #   limits = {
-      #     cpu    = "1000m"
-      #     memory = "512Mi"
-      #   }
-      # }
     }
   }
 
-  # Ensure necessary IAM permissions and network resources are created before the Cloud Run service.
   depends_on = [
     google_project_iam_member.run_sa_vertex_ai_user,
     google_kms_crypto_key_iam_member.run_sa_cmek_user,
     google_kms_crypto_key_iam_member.run_service_agent_cmek_user,
-    google_compute_subnetwork.vpc_subnet # Depends on the subnet being available for VPC Access.
+    google_compute_subnetwork.vpc_subnet
   ]
-
-  # lifecycle {
-    # Ensure ignore_changes for the image is commented out or removed
-    # so Terraform can manage image updates.
-    # ignore_changes = [template[0].containers[0].image]
-  # }
 }
 
-# (Optional but Recommended) IAM policy to allow only authenticated users to invoke.
-# Uncomment and configure as needed, changing the 'member' value.
-# resource "google_cloud_run_v2_service_iam_member" "invoker" {
+# --- Allow Unauthenticated Access to Cloud Run (Needed for ingress=all without IAM) ---
+resource "google_cloud_run_v2_service_iam_member" "allow_unauthenticated" {
+  provider = google-beta
+  project  = google_cloud_run_v2_service.default.project
+  location = google_cloud_run_v2_service.default.location
+  name     = google_cloud_run_v2_service.default.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
+# Remove public invoker policy if it exists
+# resource "google_cloud_run_v2_service_iam_member" "allow_public_invoker" { ... }
+
+
+# --- API Gateway --- 
+
+# Create the API resource
+resource "google_api_gateway_api" "api" {
+  provider = google-beta
+  api_id = var.api_gateway_api_name
+}
+
+# Create the API Config using the OpenAPI spec file
+resource "google_api_gateway_api_config" "api_config" {
+  provider = google-beta
+  api = google_api_gateway_api.api.api_id
+  api_config_id_prefix = var.api_gateway_config_name # Create unique ID based on content
+
+  openapi_documents {
+    document {
+      path = "spec.yaml"
+      # Use templatefile() function directly, pointing to the parent directory
+      contents = base64encode(templatefile("${path.module}/../openapi.yaml", {
+        cloud_run_service_url = google_cloud_run_v2_service.default.uri
+      }))
+    }
+  }
+  lifecycle {
+    create_before_destroy = true
+  }
+  depends_on = [
+    google_cloud_run_v2_service.default # Ensure Cloud Run service exists for URL
+  ]
+}
+
+# Create the Gateway, linking the API Config
+resource "google_api_gateway_gateway" "gateway" {
+  provider = google-beta
+  api_config = google_api_gateway_api_config.api_config.id
+  gateway_id = var.api_gateway_gateway_name
+  region     = var.region
+}
+
+# --- IAM for API Gateway to invoke Cloud Run --- 
+
+# Ensure the service account identity used by API Gateway exists
+# Changed from data to resource as required by beta provider
+# ---- START: Comment out block as it is no longer needed for public ingress and is causing issues ----
+# resource "google_project_service_identity" "apigw_sa_identity" {
+#   provider = google-beta
+#   project = var.project_id
+#   service = "apigateway.googleapis.com"
+# }
+# ---- END: Comment out block ----
+
+
+# Grant the API Gateway service account permission to invoke the internal Cloud Run service
+# ---- START: Comment out block as it is no longer needed for public ingress and is causing issues ----
+# resource "google_cloud_run_v2_service_iam_member" "apigw_cloudrun_invoker" {
 #   project  = google_cloud_run_v2_service.default.project
 #   location = google_cloud_run_v2_service.default.location
 #   name     = google_cloud_run_v2_service.default.name
 #   role     = "roles/run.invoker"
-#   member   = "user:your-email@example.com" # Or serviceAccount, group etc.
-# } 
+#   # Reference the email from the resource block
+#   member   = "serviceAccount:${resource.google_project_service_identity.apigw_sa_identity.email}"
+#   # Add explicit dependency to ensure identity exists before binding
+#   depends_on = [
+#     resource.google_project_service_identity.apigw_sa_identity
+#   ]
+# }
+# ---- END: Comment out block ---- 

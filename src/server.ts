@@ -7,17 +7,16 @@ app.use(express.json()); // Middleware to parse JSON bodies
 // --- Configuration (from Environment Variables) ---
 // These names MUST match the environment variables defined in terraform/main.tf
 const PORT = process.env.PORT || 8080;
-const EXPECTED_API_KEY = process.env.EXPECTED_API_KEY;
+const EXPECTED_API_KEY = process.env.EXPECTED_API_KEY; // Re-enable API Key from environment
 const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID;
 const GCP_REGION = process.env.GCP_REGION;
 const VERTEX_AI_ENDPOINT = process.env.VERTEX_AI_ENDPOINT; // e.g., "europe-west1-aiplatform.googleapis.com"
 const VERTEX_AI_MODEL_ID = process.env.VERTEX_AI_MODEL_ID; // e.g., "gemini-1.5-pro-002"
 
 // Validate that all required environment variables are set
-if (!EXPECTED_API_KEY || !GCP_PROJECT_ID || !GCP_REGION || !VERTEX_AI_ENDPOINT || !VERTEX_AI_MODEL_ID) {
+if (!GCP_PROJECT_ID || !GCP_REGION || !VERTEX_AI_ENDPOINT || !VERTEX_AI_MODEL_ID) {
     console.error('FATAL ERROR: Missing one or more required environment variables!');
     console.error('Check:', {
-        EXPECTED_API_KEY: !!EXPECTED_API_KEY,
         GCP_PROJECT_ID: !!GCP_PROJECT_ID,
         GCP_REGION: !!GCP_REGION,
         VERTEX_AI_ENDPOINT: !!VERTEX_AI_ENDPOINT,
@@ -25,6 +24,29 @@ if (!EXPECTED_API_KEY || !GCP_PROJECT_ID || !GCP_REGION || !VERTEX_AI_ENDPOINT |
     });
     process.exit(1); // Exit if configuration is incomplete
 }
+
+// --- API Key Authentication Middleware (Re-enabled) ---
+
+const apiKeyMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  const apiKey = req.headers['x-api-key'];
+
+  // Check if EXPECTED_API_KEY is set in the environment first
+  if (!EXPECTED_API_KEY) {
+    console.error('FATAL SERVER ERROR: EXPECTED_API_KEY environment variable is not set!');
+    return res.status(500).send({ error: 'Server configuration error' });
+  }
+
+  // Now check if the provided key matches
+  if (!apiKey || apiKey !== EXPECTED_API_KEY) {
+    console.warn(`Unauthorized access attempt: Missing or incorrect API key. Path: ${req.path}`);
+    return res.status(401).send({ error: 'Unauthorized: Invalid or missing API Key' });
+  }
+
+  next();
+};
+
+// Apply the API Key middleware to all subsequent routes
+app.use(apiKeyMiddleware);
 
 // --- Vertex AI Client Initialization (Updated) ---
 const vertexAI = new VertexAI({
@@ -79,20 +101,8 @@ interface ChatboxResponse {
     // Add other top-level fields if Chatbox expects them
 }
 
-// --- Middleware for API Key Authentication ---
-const authenticateKey = (req: Request, res: Response, next: NextFunction) => {
-    const apiKey = req.headers['x-api-key']; // Expect key in 'x-api-key' header
-    if (!apiKey || apiKey !== EXPECTED_API_KEY) {
-        console.warn('Authentication failed: Invalid or missing API key.');
-        // Avoid sending specific error messages like 'Invalid API Key' in production
-        return res.status(401).send('Unauthorized');
-    }
-    console.log('API Key authenticated successfully.');
-    next(); // Proceed to the route handler if key is valid
-};
-
 // --- Proxy Route (/v1/chat) (Updated) ---
-app.post('/v1/chat', authenticateKey, async (req: Request<{}, ChatboxResponse, ChatboxRequest>, res: Response<ChatboxResponse>) => {
+app.post('/v1/chat', async (req: Request<{}, ChatboxResponse, ChatboxRequest>, res: Response<ChatboxResponse>) => {
     console.log(`Received request for /v1/chat from ${req.ip}`);
     try {
         const userPrompt = req.body.prompt;
@@ -192,6 +202,5 @@ app.listen(PORT, () => {
         GCP_REGION,
         VERTEX_AI_ENDPOINT,
         VERTEX_AI_MODEL_ID,
-        // Do NOT log EXPECTED_API_KEY
     });
 }); 
