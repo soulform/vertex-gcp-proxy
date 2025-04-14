@@ -5,6 +5,7 @@ import * as protoLoader from '@grpc/proto-loader';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import prompts from 'prompts';
+import { ClientReadableStream, type Client, type ServiceError } from '@grpc/grpc-js';
 
 // REMOVE top-level access to process.env
 // const API_URL = process.env.API_URL;
@@ -51,7 +52,7 @@ export function streamChatCommand(program: Command): void {
       const { client, metadata } = createGrpcClient(GRPC_TARGET, API_KEY);
 
       if (options.interactive) {
-        await startInteractiveStreamingChat(client, metadata);
+        await startInteractiveStreamingChat(client, GRPC_TARGET, API_KEY);
       } else if (options.prompt) {
         await sendStreamingPrompt(client, metadata, options.prompt);
       } else {
@@ -107,112 +108,141 @@ async function sendStreamingPrompt(client: any, metadata: grpc.Metadata, prompt:
 }
 
 // Interactive streaming chat using prompts library
-async function startInteractiveStreamingChat(client: any, metadata: grpc.Metadata): Promise<void> {
-    console.log(chalk.cyan('Starting interactive gRPC streaming chat session. Press Ctrl+C to exit.'));
-    const history: ProtoHistoryItem[] = [];
-    let currentCall: grpc.ClientReadableStream<any> | null = null;
+async function startInteractiveStreamingChat(
+  client: any,
+  target: string,
+  apiKey: string,
+) {
+  console.log(chalk.blue('Starting interactive streaming chat...'));
+  console.log(chalk.yellow('Type "exit" or press Ctrl+C to quit.'));
+
+  const history: ProtoHistoryItem[] = [];
+  let call: ClientReadableStream<any> | null = null;
+
+  while (true) {
+    const response = await prompts({
+      type: 'text',
+      name: 'input',
+      message: chalk.green('You:'),
+      validate: (input) => (input.trim().length > 0 ? true : 'Input cannot be empty.'),
+    });
+
+    if (response.input === undefined || response.input.toLowerCase() === 'exit') {
+      console.log(chalk.yellow('Exiting chat...'));
+      break;
+    }
+
+    const userInput = response.input;
+    history.push({ role: 'user', parts: [{ text: userInput }] });
+
+    const request = { prompt: userInput, history: history };
+    const metadata = new grpc.Metadata();
+    metadata.add('x-api-key', apiKey);
+
+    let fullResponse = '';
+    let streamClosed = false;
 
     try {
-        while(true) {
-            // Cancel previous call before asking new question
-            if (currentCall) {
-                currentCall.removeAllListeners();
-                currentCall.cancel();
-                currentCall = null;
-            }
+      call = client.streamChat(request, metadata) as ClientReadableStream<any>;
 
-            const response = await prompts({
-                type: 'text',
-                name: 'input',
-                message: chalk.blue('User: ')
-            });
+      process.stdout.write(chalk.cyan('Model: '));
 
-             // Check if input is undefined (Ctrl+C or other interruption)
-            if (response.input === undefined) {
-                 console.log(chalk.cyan('\nExiting chat session (input cancelled or invalid).'));
-                 break;
-            }
-            
-            const input = response.input.trim();
-            
-            if (!input) {
-                continue;
-            }
+      await new Promise<void>((resolve, reject) => {
+        if (!call) return reject(new Error("Stream call not initiated"));
 
-            try {
-                console.log(chalk.green('Model: '));
-                const userMessage: ProtoHistoryItem = { role: 'user', parts: [{ text: input }] };
-                const request = { prompt: input, history: history };
+        call.on('data', (chunk: any) => {
+          const text = chunk.text_chunk;
+          if (text) {
+            process.stdout.write(chalk.cyan(text));
+            fullResponse += text;
+          }
+        });
 
-                await new Promise<void>((resolve, reject) => {
-                    currentCall = client.streamChat(request, metadata);
-                    if (!currentCall) { reject(new Error('Failed to initiate gRPC stream call.')); return; }
+        call.on('end', () => {
+          process.stdout.write('\n');
+          if (fullResponse) {
+            history.push({ role: 'model', parts: [{ text: fullResponse }] });
+          }
+          streamClosed = true;
+          resolve();
+        });
 
-                    let accumulatedResponse = '';
-                    let receivedError = false;
-                    let finishedCleanly = false;
-
-                    currentCall.on('data', (chunk: any) => {
-                        if (chunk.error) {
-                            console.error(chalk.red(`\nServer Stream Error: ${chunk.error}`));
-                            receivedError = true;
-                        } else if (chunk.text_chunk) {
-                            process.stdout.write(chunk.text_chunk);
-                            accumulatedResponse += chunk.text_chunk;
-                        }
-                        if (chunk.is_final_chunk) {
-                            console.log(); // Final newline
-                            if (chunk.finish_reason && chunk.finish_reason !== 'STOP') {
-                                console.warn(chalk.yellow(`\nStream finished with reason: ${chunk.finish_reason}`));
-                            }
-                        }
-                    });
-
-                    currentCall.on('end', () => {
-                        finishedCleanly = true;
-                        if (!receivedError && accumulatedResponse) {
-                             history.push(userMessage);
-                             history.push({ role: 'model', parts: [{ text: accumulatedResponse }] });
-                        } else {
-                            history.push(userMessage);
-                        }
-                        currentCall = null;
-                        resolve();
-                    });
-
-                    currentCall.on('error', (err: grpc.ServiceError) => {
-                        if (err.code !== grpc.status.CANCELLED) {
-                            console.error(chalk.red('\ngRPC Stream Error:'), err.details || err.message);
-                            history.push(userMessage);
-                        }
-                        receivedError = true; 
-                        currentCall = null;
-                        if (err.code !== grpc.status.CANCELLED) { reject(err); } else { resolve(); }
-                    });
-
-                    currentCall.on('status', (status: grpc.StatusObject) => {
-                        if (status.code !== grpc.status.OK && status.code !== grpc.status.CANCELLED) {
-                            console.error(chalk.yellow(`\ngRPC Stream Status Error: ${status.details}`));
-                        }
-                    });
-                }); // End promise
-
-            } catch (error: unknown) {
-                if (error instanceof Error && error.message !== 'Failed to initiate gRPC stream call.') {
-                     console.error(chalk.red('Error processing stream call:'), error.message);
-                } else if (!(error instanceof Error)) {
-                    console.error(chalk.red('Unknown error processing stream call'), error);
-                }
-            }
-        } // End while loop
-    } catch (error) {
-        // Catch potential errors from prompts itself if not handled by onCancel
-        console.error(chalk.red('An unexpected error occurred:'), error);
+        call.on('error', (err: ServiceError) => {
+          process.stdout.write('\n');
+          console.error(chalk.red(`\n[gRPC Stream Error] Code: ${err.code} - ${err.details}`));
+          streamClosed = true;
+          reject(err);
+        });
+      });
+    } catch (error: any) {
+      if (!streamClosed) {
+         console.error(chalk.red(`[Error] Failed to process stream: ${error.message || error}`));
+      }
+    } finally {
+      if (call) {
+        call.removeAllListeners();
+      }
     }
-     // No rl.close() needed
-     // Ensure final cancellation if main loop errors
-     if (currentCall) {
-            currentCall.removeAllListeners();
-            currentCall.cancel();
-     }
+  }
+}
+
+async function handleStreamCommand(
+  prompt: string | undefined,
+  interactive: boolean,
+  client: any,
+  target: string,
+  apiKey: string,
+) {
+  if (interactive) {
+    await startInteractiveStreamingChat(client, target, apiKey);
+  } else if (prompt) {
+    const history: ProtoHistoryItem[] = [{ role: 'user', parts: [{ text: prompt }] }];
+    const request = { prompt: prompt, history: history };
+    const metadata = new grpc.Metadata();
+    metadata.add('x-api-key', apiKey);
+    let call: ClientReadableStream<any> | null = null;
+    let streamClosed = false;
+
+    try {
+      console.log(chalk.green(`User: ${prompt}`));
+      process.stdout.write(chalk.cyan('Model: '));
+
+      call = client.streamChat(request, metadata) as ClientReadableStream<any>;
+
+      await new Promise<void>((resolve, reject) => {
+         if (!call) return reject(new Error("Stream call not initiated"));
+
+        call.on('data', (chunk: any) => {
+          const text = chunk.text_chunk;
+          if (text) {
+            process.stdout.write(chalk.cyan(text));
+          }
+        });
+
+        call.on('end', () => {
+          process.stdout.write('\n');
+          streamClosed = true;
+          resolve();
+        });
+
+        call.on('error', (err: ServiceError) => {
+           process.stdout.write('\n');
+          console.error(chalk.red(`\n[gRPC Stream Error] Code: ${err.code} - ${err.details}`));
+          streamClosed = true;
+          reject(err);
+        });
+      });
+    } catch (error: any) {
+      if (!streamClosed) {
+         console.error(chalk.red(`[Error] Failed to process stream: ${error.message || error}`));
+      }
+    } finally {
+      if (call) {
+        call.removeAllListeners();
+      }
+    }
+  } else {
+    console.error(chalk.red('Error: Prompt is required for non-interactive mode.'));
+    process.exit(1);
+  }
 }

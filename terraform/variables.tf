@@ -30,7 +30,7 @@ variable "vpc_subnet_cidr" {
 variable "kms_keyring_name" {
   description = "Name for the KMS KeyRing"
   type        = string
-  default     = "vertex-proxy-keyring"
+  default     = "vertex-gcp-proxy-keyring"
 }
 
 variable "kms_key_name" {
