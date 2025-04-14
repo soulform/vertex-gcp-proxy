@@ -1,49 +1,62 @@
-# ---- Base Node ----
-# Use a specific LTS version for reproducibility
+# ---- Base Stage ----
 FROM node:20-slim AS base
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable pnpm
-
-# ---- Builder ----
-# Used to install dependencies and build the TypeScript source
-FROM base AS builder
 WORKDIR /usr/src/app
 
-# Install pnpm
-# RUN npm install -g pnpm
+# Install pnpm globally
+RUN npm install -g pnpm
 
-# Copy package management files
-COPY package.json pnpm-lock.yaml ./
+# Install necessary build tools if needed (e.g., for native modules)
+# RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/*
 
-# Install ALL dependencies (including devDependencies needed for build)
+
+# ---- Dependencies Stage ----
+FROM base AS deps
+WORKDIR /usr/src/app
+
+# Copy only dependency-related files
+COPY package.json pnpm-lock.yaml* ./
+
+# Install production dependencies using pnpm
+RUN pnpm install --prod --frozen-lockfile
+
+
+# ---- Build Stage ----
+FROM base AS build
+WORKDIR /usr/src/app
+
+# Copy dependency-related files and install ALL dependencies (incl. dev)
+COPY package.json pnpm-lock.yaml* ./
 RUN pnpm install --frozen-lockfile
 
 # Copy the rest of the application source code
 COPY . .
 
-# ---- Add Debugging Steps ----
-RUN echo "--- Checking tsconfig.json contents: ---" && cat tsconfig.json
-RUN echo "--- Checking tsc version: ---" && pnpm exec tsc --version
-# -----------------------------
-
 # Build the TypeScript code
 RUN pnpm run build
-# Prune dev dependencies after build
+
+# Prune development dependencies
 RUN pnpm prune --prod
 
-# ---- Runner ----
-# Final, smaller image with only production dependencies and built code
-FROM base AS runner
+
+# ---- Final Stage ----
+FROM base AS final
 WORKDIR /usr/src/app
 
-# Copy production node_modules and built code from builder stage
-COPY --from=builder /usr/src/app/node_modules ./node_modules
-COPY --from=builder /usr/src/app/dist ./dist
+# Copy production dependencies from the 'deps' stage
+COPY --from=deps /usr/src/app/node_modules ./node_modules
 
-# Make port 8080 available (matches server.ts and Terraform firewall/Cloud Run)
+# Copy the built application code from the 'build' stage
+COPY --from=build /usr/src/app/dist ./dist
+# Copy protobuf definitions into the correct location relative to dist/
+COPY --from=build /usr/src/app/src/proto ./dist/proto
+
+# Set environment variables (can be overridden at runtime)
+ENV NODE_ENV=production
+# PORT is exposed by Cloud Run automatically
+# EXPECTED_API_KEY, GCP_PROJECT_ID, GCP_REGION, VERTEX_AI_MODEL_ID should be set by Cloud Run env vars
+
+# Expose the port the app listens on (gRPC typically uses standard ports, but 8080 is common for Cloud Run)
 EXPOSE 8080
 
-# Define the command to run the application
-# Executes the compiled JavaScript code
-CMD [ "node", "dist/server.js" ] 
+# Command to run the gRPC server
+CMD [ "node", "dist/server.js" ]

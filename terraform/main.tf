@@ -123,18 +123,20 @@ resource "google_artifact_registry_repository" "repo" {
   ]
 }
 
-# --- Cloud Run (Updated for API Gateway) ---
+# --- Cloud Run (Updated for gRPC) ---
 resource "google_cloud_run_v2_service" "default" {
   provider = google-beta
 
   name     = var.cloud_run_service_name
   location = var.region
-  # Change ingress to allow all traffic, relying on backend auth
-  ingress = "INGRESS_TRAFFIC_ALL" # Changed from INTERNAL_ONLY
+  # Keep ingress=all, rely on application-level API key check via metadata
+  ingress = "INGRESS_TRAFFIC_ALL"
 
   template {
     service_account = google_service_account.cloud_run_sa.email
-    encryption_key = google_kms_crypto_key.cmek_key.id
+    # Explicitly set Gen2 execution environment for HTTP/2 & gRPC support
+    execution_environment = "EXECUTION_ENVIRONMENT_GEN2" 
+    encryption_key = google_kms_crypto_key.cmek_key.id # Keep CMEK
 
     labels = {
       "terraform-redeployed-at" = formatdate("YYYYMMDD-hhmmss", timestamp())
@@ -152,13 +154,14 @@ resource "google_cloud_run_v2_service" "default" {
       image = "${google_artifact_registry_repository.repo.location}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.repo.repository_id}/vertex-proxy:latest"
 
       ports {
-        container_port = 8080
+        # Cloud Run Gen2 automatically handles HTTP/2 on the container_port
+        # The gRPC server listens on this port.
+        container_port = 8080 
+        name = "h2c" # Standard port name for HTTP/2 cleartext (Cloud Run frontend handles TLS)
       }
 
-      # Add EXPECTED_API_KEY env var back for backend authentication
       env {
         name  = "EXPECTED_API_KEY"
-        # Ensure this variable is defined in variables.tf and set in secrets.tfvars
         value = var.EXPECTED_API_KEY
       }
       env {
@@ -169,13 +172,10 @@ resource "google_cloud_run_v2_service" "default" {
         name  = "GCP_REGION"
         value = var.region
       }
-       env {
-        name = "VERTEX_AI_ENDPOINT"
-        value = "${var.region}-aiplatform.googleapis.com"
-      }
+       # VERTEX_AI_ENDPOINT not needed as SDK infers from region
        env {
         name = "VERTEX_AI_MODEL_ID"
-        value = "gemini-1.5-pro-002" # Use specific model ID
+        value = "gemini-1.5-pro-002" 
       }
     }
   }
@@ -189,6 +189,8 @@ resource "google_cloud_run_v2_service" "default" {
 }
 
 # --- Allow Unauthenticated Access to Cloud Run (Needed for ingress=all without IAM) ---
+# This allows network access, but the gRPC server still checks the API Key metadata.
+# Requires Org Policy `constraints/iam.allowedPolicyMemberDomains` relaxation for the project.
 resource "google_cloud_run_v2_service_iam_member" "allow_unauthenticated" {
   provider = google-beta
   project  = google_cloud_run_v2_service.default.project
@@ -202,70 +204,13 @@ resource "google_cloud_run_v2_service_iam_member" "allow_unauthenticated" {
 # resource "google_cloud_run_v2_service_iam_member" "allow_public_invoker" { ... }
 
 
-# --- API Gateway --- 
+# --- REMOVE API Gateway RESOURCES --- 
 
-# Create the API resource
-resource "google_api_gateway_api" "api" {
-  provider = google-beta
-  api_id = var.api_gateway_api_name
-}
+# resource "google_api_gateway_api" "api" { ... }
+# resource "google_api_gateway_api_config" "api_config" { ... }
+# resource "google_api_gateway_gateway" "gateway" { ... }
 
-# Create the API Config using the OpenAPI spec file
-resource "google_api_gateway_api_config" "api_config" {
-  provider = google-beta
-  api = google_api_gateway_api.api.api_id
-  api_config_id_prefix = var.api_gateway_config_name # Create unique ID based on content
+# --- REMOVE IAM for API Gateway to invoke Cloud Run --- 
 
-  openapi_documents {
-    document {
-      path = "spec.yaml"
-      # Use templatefile() function directly, pointing to the parent directory
-      contents = base64encode(templatefile("${path.module}/../openapi.yaml", {
-        cloud_run_service_url = google_cloud_run_v2_service.default.uri
-      }))
-    }
-  }
-  lifecycle {
-    create_before_destroy = true
-  }
-  depends_on = [
-    google_cloud_run_v2_service.default # Ensure Cloud Run service exists for URL
-  ]
-}
-
-# Create the Gateway, linking the API Config
-resource "google_api_gateway_gateway" "gateway" {
-  provider = google-beta
-  api_config = google_api_gateway_api_config.api_config.id
-  gateway_id = var.api_gateway_gateway_name
-  region     = var.region
-}
-
-# --- IAM for API Gateway to invoke Cloud Run --- 
-
-# Ensure the service account identity used by API Gateway exists
-# Changed from data to resource as required by beta provider
-# ---- START: Comment out block as it is no longer needed for public ingress and is causing issues ----
-# resource "google_project_service_identity" "apigw_sa_identity" {
-#   provider = google-beta
-#   project = var.project_id
-#   service = "apigateway.googleapis.com"
-# }
-# ---- END: Comment out block ----
-
-
-# Grant the API Gateway service account permission to invoke the internal Cloud Run service
-# ---- START: Comment out block as it is no longer needed for public ingress and is causing issues ----
-# resource "google_cloud_run_v2_service_iam_member" "apigw_cloudrun_invoker" {
-#   project  = google_cloud_run_v2_service.default.project
-#   location = google_cloud_run_v2_service.default.location
-#   name     = google_cloud_run_v2_service.default.name
-#   role     = "roles/run.invoker"
-#   # Reference the email from the resource block
-#   member   = "serviceAccount:${resource.google_project_service_identity.apigw_sa_identity.email}"
-#   # Add explicit dependency to ensure identity exists before binding
-#   depends_on = [
-#     resource.google_project_service_identity.apigw_sa_identity
-#   ]
-# }
-# ---- END: Comment out block ---- 
+# resource "google_project_service_identity" "apigw_sa_identity" { ... }
+# resource "google_cloud_run_v2_service_iam_member" "apigw_cloudrun_invoker" { ... } 

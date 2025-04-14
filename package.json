@@ -1,31 +1,41 @@
 {
   "name": "vertex-gcp-proxy",
   "version": "1.0.0",
-  "description": "Proxy for Vertex AI Gemini using Node.js and TypeScript",
+  "description": "Proxy for Vertex AI Gemini using Node.js, gRPC, and Cloud Run",
   "main": "dist/server.js",
+  "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && pnpm run build:proto",
+    "build:proto": "echo \"Protobuf compilation might be needed depending on loader usage, but @grpc/proto-loader handles dynamic loading.\"",
     "start": "node dist/server.js",
-    "dev": "nodemon src/server.ts",
+    "dev": "tsx watch src/server.ts",
     "lint": "eslint .",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "cli:chat": "tsx src/cli/index.ts chat",
+    "cli:stream": "tsx src/cli/index.ts stream",
+    "cloudrun:deploy-changes": "docker build --no-cache --platform linux/amd64 -t ${REPO_URL}/vertex-proxy:latest . && docker push ${REPO_URL}/vertex-proxy:latest && cd terraform && terraform apply -auto-approve -var-file=secrets.tfvars"
+  },
+  "bin": {
+    "vertex-cli": "./dist/cli/index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@google-cloud/vertexai": "^1.0.0",
-    "express": "^4.19.2"
+    "@google-cloud/vertexai": "^1.9.3",
+    "@grpc/grpc-js": "^1.11.0",
+    "@grpc/proto-loader": "^0.7.13",
+    "chalk": "^5.4.1",
+    "commander": "^12.0.0",
+    "dotenv": "^16.4.5"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
     "@types/node": "^20.12.12",
-    "typescript": "^5.4.5",
-    "ts-node": "^10.9.2",
-    "nodemon": "^3.1.0",
-    "eslint": "^9.3.0",
     "@typescript-eslint/eslint-plugin": "^7.10.0",
     "@typescript-eslint/parser": "^7.10.0",
-    "globals": "^15.3.0"
+    "eslint": "^9.3.0",
+    "globals": "^15.3.0",
+    "typescript": "^5.4.5",
+    "tsx": "^4.16.2"
   }
-} 
+}

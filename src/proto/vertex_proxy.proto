@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package vertexproxy;
+
+// The Vertex Proxy service definition.
+service VertexProxy {
+  // Sends a single chat message and receives a single response.
+  rpc Chat(ChatRequest) returns (ChatMessage) {}
+
+  // Sends a single chat message and receives a stream of response chunks.
+  rpc StreamChat(ChatRequest) returns (stream StreamChatMessage) {}
+}
+
+// Represents a single part of a message (usually just text for Gemini)
+message ContentPart {
+  string text = 1;
+}
+
+// Represents a message in the chat history or a model response.
+message HistoryItem {
+  // Role of the author (user or model)
+  string role = 1; 
+  // Parts of the message content
+  repeated ContentPart parts = 2;
+}
+
+// The request message containing the user's prompt and history.
+message ChatRequest {
+  string prompt = 1;
+  repeated HistoryItem history = 2;
+  // Note: API Key will be sent via metadata, not in the message body.
+}
+
+// Represents a complete chat message response (for unary call)
+message ChatMessage {
+  // Mimics Vertex AI candidate structure
+  message Candidate {
+     HistoryItem content = 1;
+     string finish_reason = 2;
+     // Potentially add safety ratings later if needed
+  }
+  repeated Candidate candidates = 1;
+  string error = 2; // Field for returning errors
+}
+
+// Represents a chunk of a streaming chat response.
+message StreamChatMessage {
+  string text_chunk = 1;
+  string finish_reason = 2; // Sent with the last chunk
+  string error = 3; // Field for returning stream errors
+  bool is_final_chunk = 4; // Explicitly signal the end of text stream
+} 

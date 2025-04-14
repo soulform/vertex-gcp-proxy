@@ -2,7 +2,8 @@
   "compilerOptions": {
     "target": "ES2020",                     /* Set the JavaScript language version for emitted JavaScript and include compatible library declarations. */
     "lib": ["ES2020", "DOM"], // Explicitly include ES2020 library features
-    "module": "CommonJS",                  /* Specify what module code is generated. */
+    "module": "NodeNext",                  /* Specify what module code is generated. */
+    "moduleResolution": "NodeNext",        /* Specify how TypeScript finds module files */
     "outDir": "./dist",                      /* Specify an output folder relative to rootDir */
     "rootDir": "./src",                      /* Specify the root folder for source files */
     "esModuleInterop": true,              /* Emit additional JavaScript to ease support for importing CommonJS modules. This enables `allowSyntheticDefaultImports` for type compatibility. */

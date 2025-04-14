@@ -74,4 +74,54 @@ paths:
         '403':
           description: Forbidden (IAM permission issue calling backend)
         '500':
-          description: Internal Server Error (Proxy or Vertex AI error) 
+          description: Internal Server Error (Proxy or Vertex AI error)
+          
+  /v1/chat/stream:
+    post:
+      summary: Streaming chat with Vertex AI Gemini
+      operationId: streamChatProxy
+      consumes:
+        - application/json
+      produces:
+        - text/event-stream
+      parameters:
+        - in: body
+          name: body
+          description: Chat request payload
+          required: true
+          schema:
+            type: object
+            required:
+              - prompt
+            properties:
+              prompt:
+                type: string
+                description: The user's prompt.
+              history:
+                type: array
+                description: Optional chat history (Vertex AI format).
+                items:
+                  type: object
+                  properties:
+                    role:
+                      type: string
+                      enum: [user, model]
+                    parts:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          text:
+                            type: string
+      responses:
+        '200':
+          description: Streaming response from Vertex AI
+          schema:
+            type: string
+            description: Server-sent events stream
+        '400':
+          description: Bad Request (e.g., missing prompt)
+        '403':
+          description: Forbidden (IAM permission issue calling backend)
+        '500':
+          description: Internal Server Error (Proxy or Vertex AI error)
