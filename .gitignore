@@ -1,3 +1,7 @@
+# Build output
+build/
+dist/
+
 # Ignore Terraform state files
 *.tfstate
 *.tfstate.*
