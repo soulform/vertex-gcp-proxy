@@ -1,6 +1,6 @@
 # Contributing to [Project Name]
 
-First off, thank you for considering contributing to Vertex AI gRPC Proxy! It's people like you that make open source such a great community.
+First off, thank you for considering contributing to `Vertex AI gRPC Proxy`! It's people like you that make open source such a great community.
 
 We welcome any type of contribution, not only code. You can help with:
 
