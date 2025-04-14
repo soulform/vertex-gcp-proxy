@@ -205,6 +205,25 @@ Error: Error applying IAM policy for cloudrunv2 service ... googleapi: Error 400
 *   If gRPC connections fail, ensure the target address (`hostname:443`) is correct, TLS credentials are used, and the `x-api-key` metadata is being sent.
 *   Check server logs for API key validation errors or issues calling the Vertex AI API.
 
+## Alternative Architecture Considered: API Gateway with gRPC Passthrough
+
+While the `main` branch connects gRPC clients directly to the Cloud Run service for potentially better streaming performance, an attempt was made to reintroduce API Gateway in front of the gRPC backend. This was explored primarily to leverage API Gateway features like rate limiting, managed monitoring, and potentially avoiding the `allUsers` invoke permission on Cloud Run (by having the Gateway authenticate to an internal Cloud Run service using its service account).
+
+The goal was **native gRPC passthrough**: `Client (gRPC) -> API Gateway -> Cloud Run (gRPC)`.
+
+However, configuring API Gateway for this pattern proved problematic:
+
+1.  **Initial OpenAPI Attempt:** Using a minimal OpenAPI specification to define the Cloud Run gRPC backend resulted in `404 Not Found` errors from API Gateway, indicating it couldn't route the specific gRPC method paths (e.g., `/vertexproxy.VertexProxy/Chat`) based solely on the OpenAPI definition.
+2.  **gRPC Service Config Attempt:** Switching the Terraform configuration (`google_api_gateway_api_config`) to use the `grpc_services` block (with a proto descriptor set and a `grpc_service_config.yaml`) also failed during Terraform deployment. Errors indicated issues with missing backend rules or duplicate configuration source paths, suggesting that native gRPC passthrough configured this way is either unsupported or requires a more complex, non-obvious setup.
+
+**Transcoding Alternative:** The standard, documented approach for API Gateway with gRPC backends is HTTP/JSON transcoding (`Client (HTTP) -> API Gateway -> Cloud Run (gRPC)`). This was not pursued in the `main` branch because:
+    a) It might reintroduce the streaming buffering issues that the switch to native gRPC aimed to solve.
+    b) It requires clients to use HTTP/SSE again, reverting the client-side implementation.
+
+**Conclusion:** Due to the configuration difficulties with native gRPC passthrough, the `main` branch retains the direct Cloud Run connection. This prioritizes the direct gRPC communication path at the expense of built-in API Gateway features.
+
+**The code demonstrating the attempt to configure API Gateway with the `grpc_services` block (Point 2 above) can be found in the `feat/api-gateway` branch.**
+
 ## Future Improvements
 
 *   Integrate **Google Secret Manager** for `EXPECTED_API_KEY`.
