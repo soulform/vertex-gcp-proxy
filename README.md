@@ -44,6 +44,7 @@ While you can use SDKs like the Vercel AI SDK (`@ai-sdk/google-vertex`) to call 
 * **Interface Definition:** Protocol Buffers (`.proto`)
 * **GCP SDK (Server):** `@google-cloud/vertexai` (Node.js)
 * **CLI gRPC Client:** `@grpc/grpc-js`
+* **CLI Interactive Prompts:** `prompts` (for user-friendly interactive input)
 * **CLI Runner:** `tsx`
 
 ## Prerequisites
@@ -249,9 +250,9 @@ vertex-gcp-proxy/
 │   │   └── vertex_proxy.proto
 │   └── cli/            # Command-line interface (gRPC client)
 │       ├── index.ts    # CLI entry point
-│       ├── commands/   # CLI command implementations (using @grpc/grpc-js)
-│       │   ├── chat.ts
-│       │   └── stream.ts
+│       ├── commands/   # CLI command implementations
+│       │   ├── chat.ts # uses @grpc/grpc-js and prompts
+│       │   └── stream.ts # uses @grpc/grpc-js and prompts
 │       ├── .env        # (GITIGNORED!) gRPC Target/Key for CLI
 │       └── .env.example # Example environment variables for CLI
 ├── .gitignore
@@ -280,7 +281,7 @@ vertex-gcp-proxy/
 
 ## CLI Usage
 
-The project includes a command-line interface (`src/cli/`) for interacting with the deployed Vertex AI gRPC proxy.
+The project includes a command-line interface (`src/cli/`) for interacting with the deployed Vertex AI gRPC proxy. Interactive modes (`-i`) use the `prompts` library for a robust user experience.
 
 1.  **Setup:**
     *   Copy the CLI environment file:

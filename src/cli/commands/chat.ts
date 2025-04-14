@@ -1,10 +1,10 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import * as readline from 'node:readline';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import prompts from 'prompts';
 
 // Helper function to create gRPC client
 const createGrpcClient = (target: string, apiKey: string) => {
@@ -40,11 +40,6 @@ interface ProtoHistoryItem {
     parts: { text: string }[];
 }
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
-
 export function chatCommand(program: Command): void {
   program
     .command('chat')
@@ -52,24 +47,24 @@ export function chatCommand(program: Command): void {
     .option('-i, --interactive', 'Start an interactive chat session')
     .option('-p, --prompt <prompt>', 'Single prompt to send')
     .action(async (options) => {
-      const GRPC_TARGET = process.env.GRPC_TARGET;
-      const API_KEY = process.env.API_KEY;
+        const GRPC_TARGET = process.env.GRPC_TARGET;
+        const API_KEY = process.env.API_KEY;
 
-      if (!GRPC_TARGET || !API_KEY) {
-         console.error(chalk.red('Error: GRPC_TARGET and API_KEY must be set in .env and loaded correctly.'));
-         process.exit(1);
-      }
+        if (!GRPC_TARGET || !API_KEY) {
+            console.error(chalk.red('Error: GRPC_TARGET and API_KEY must be set in .env and loaded correctly.'));
+            process.exit(1);
+        }
 
-      const { client, metadata } = createGrpcClient(GRPC_TARGET, API_KEY);
+        const { client, metadata } = createGrpcClient(GRPC_TARGET, API_KEY);
 
-      if (options.interactive) {
-        await startInteractiveChat(client, metadata);
-      } else if (options.prompt) {
-        await sendSinglePrompt(client, metadata, options.prompt);
-      } else {
-        console.log(chalk.yellow('Please provide a prompt (-p) or use interactive mode (-i).'));
-        program.help();
-      }
+        if (options.interactive) {
+            await startInteractiveChat(client, metadata); 
+        } else if (options.prompt) {
+            await sendSinglePrompt(client, metadata, options.prompt);
+        } else {
+            console.log(chalk.yellow('Please provide a prompt (-p) or use interactive mode (-i).'));
+            program.help();
+        }
     });
 }
 
@@ -109,64 +104,74 @@ async function sendSinglePrompt(client: any, metadata: grpc.Metadata, prompt: st
   }
 }
 
+// Interactive chat using prompts library
 async function startInteractiveChat(client: any, metadata: grpc.Metadata): Promise<void> {
-  console.log(chalk.cyan('Starting interactive gRPC chat session. Type "exit" to quit.'));
+    console.log(chalk.cyan('Starting interactive gRPC chat session. Press Ctrl+C to exit.'));
+    const history: ProtoHistoryItem[] = []; // Restore history array
 
-  const history: ProtoHistoryItem[] = []; // History in proto format
-
-  const promptUser = () => {
-    rl.question(chalk.blue('User: '), async (input) => {
-      if (input.toLowerCase() === 'exit') {
-        console.log(chalk.cyan('Exiting chat session.'));
-        rl.close();
-        return;
-      }
-
-      try {
-        const userMessage: ProtoHistoryItem = { role: 'user', parts: [{ text: input }] };
-
-        const request = {
-          prompt: input,
-          history: history, // Send previous history
-        };
-
-         await new Promise<void>((resolve, reject) => {
-            client.chat(request, metadata, (err: grpc.ServiceError | null, response: any) => {
-                if (err) {
-                    console.error(chalk.red('gRPC Error:'), err.details || err.message);
-                    // Optionally add user message to history despite error
-                    history.push(userMessage);
-                    reject(err);
-                } else if (response.error) {
-                     console.error(chalk.red('Proxy Server Error:'), response.error);
-                     // Optionally add user message to history despite error
-                     history.push(userMessage);
-                     resolve();
-                } else {
-                    const responseText = response.candidates?.[0]?.content?.parts?.[0]?.text;
-                    if (responseText) {
-                        console.log(chalk.green('Model: ') + responseText);
-                        // Add user message AND model response to history for next turn
-                        history.push(userMessage);
-                        history.push({ role: 'model', parts: [{ text: responseText }] });
-                    } else {
-                        console.warn(chalk.yellow('Model response format unexpected or empty.'), JSON.stringify(response, null, 2));
-                        // Optionally add user message to history
-                        history.push(userMessage);
-                    }
-                    resolve();
-                }
+    try {
+        // Restore the while loop
+        while (true) { 
+            const response = await prompts({
+                type: 'text',
+                name: 'input',
+                message: chalk.blue('User: ')
+                // Removed onCancel
             });
-        });
+            
+            // Remove debug log
+            // console.log('[DEBUG: prompts response:]', response);
 
-      } catch (error) {
-         // Error is logged within the callback
-         console.error(chalk.red('Failed during interactive gRPC request.'));
-      }
+            if (response.input === undefined) { 
+                 console.log(chalk.cyan('\nExiting chat session (input cancelled or invalid).'));
+                 break; // Exit the loop
+            }
 
-      promptUser(); // Continue the conversation
-    });
-  };
+            const input = response.input.trim();
+            // Remove debug log
+            // console.log(`Input received: "${input}"`);
 
-  promptUser();
+            if (!input) {
+                 // Remove debug log
+                 // console.log('Empty input received.')
+                 continue; // Ask again if empty
+            }
+            
+            // Restore gRPC call logic
+            const userMessage: ProtoHistoryItem = { role: 'user', parts: [{ text: input }] };
+            const request = { prompt: input, history: history };
+            
+            try {
+                 const grpcResponse = await new Promise<any>((resolve, reject) => {
+                    client.chat(request, metadata, (err: grpc.ServiceError | null, response: any) => {
+                         if (err) { reject(err); } 
+                         else { resolve(response); }
+                    });
+                 });
+
+                 const responseText = grpcResponse.candidates?.[0]?.content?.parts?.[0]?.text;
+                 if (responseText) {
+                     console.log(chalk.green('Model: ') + responseText);
+                     history.push(userMessage);
+                     history.push({ role: 'model', parts: [{ text: responseText }] });
+                 } else if (!grpcResponse.error) { 
+                     console.warn(chalk.yellow('Model response format unexpected or empty.'), JSON.stringify(grpcResponse, null, 2));
+                     history.push(userMessage);
+                 } else {
+                     console.error(chalk.red('Proxy Server Error:'), grpcResponse.error);
+                     history.push(userMessage); // Store user message even if server erred
+                 }
+
+            } catch (grpcError: any) {
+                 console.error(chalk.red('gRPC Error:'), grpcError.details || grpcError.message);
+                 // break; // Optionally break loop on error
+            }
+            // --- End of restored logic ---
+
+        } // End while loop
+    } catch (error) {
+        console.error(chalk.red('An unexpected error occurred:'), error);
+    }
+    // Remove debug log
+    // console.log('Function end.');
 }

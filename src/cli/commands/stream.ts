@@ -1,10 +1,10 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import * as readline from 'node:readline';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import prompts from 'prompts';
 
 // REMOVE top-level access to process.env
 // const API_URL = process.env.API_URL;
@@ -33,11 +33,6 @@ interface ProtoHistoryItem {
     role: 'user' | 'model';
     parts: { text: string }[];
 }
-
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
 
 export function streamChatCommand(program: Command): void {
   program
@@ -111,124 +106,113 @@ async function sendStreamingPrompt(client: any, metadata: grpc.Metadata, prompt:
     });
 }
 
-// Refactored to use gRPC streaming call
+// Interactive streaming chat using prompts library
 async function startInteractiveStreamingChat(client: any, metadata: grpc.Metadata): Promise<void> {
-  console.log(chalk.cyan('Starting interactive gRPC streaming chat session. Type "exit" to quit.'));
+    console.log(chalk.cyan('Starting interactive gRPC streaming chat session. Press Ctrl+C to exit.'));
+    const history: ProtoHistoryItem[] = [];
+    let currentCall: grpc.ClientReadableStream<any> | null = null;
 
-  const history: ProtoHistoryItem[] = []; // History in proto format
-  let currentCall: grpc.ClientReadableStream<any> | null = null;
+    try {
+        while(true) {
+            // Cancel previous call before asking new question
+            if (currentCall) {
+                currentCall.removeAllListeners();
+                currentCall.cancel();
+                currentCall = null;
+            }
 
-  const promptUser = () => {
-     // Cancel previous call if it exists and is still running
+            const response = await prompts({
+                type: 'text',
+                name: 'input',
+                message: chalk.blue('User: ')
+            });
+
+             // Check if input is undefined (Ctrl+C or other interruption)
+            if (response.input === undefined) {
+                 console.log(chalk.cyan('\nExiting chat session (input cancelled or invalid).'));
+                 break;
+            }
+            
+            const input = response.input.trim();
+            
+            if (!input) {
+                continue;
+            }
+
+            try {
+                console.log(chalk.green('Model: '));
+                const userMessage: ProtoHistoryItem = { role: 'user', parts: [{ text: input }] };
+                const request = { prompt: input, history: history };
+
+                await new Promise<void>((resolve, reject) => {
+                    currentCall = client.streamChat(request, metadata);
+                    if (!currentCall) { reject(new Error('Failed to initiate gRPC stream call.')); return; }
+
+                    let accumulatedResponse = '';
+                    let receivedError = false;
+                    let finishedCleanly = false;
+
+                    currentCall.on('data', (chunk: any) => {
+                        if (chunk.error) {
+                            console.error(chalk.red(`\nServer Stream Error: ${chunk.error}`));
+                            receivedError = true;
+                        } else if (chunk.text_chunk) {
+                            process.stdout.write(chunk.text_chunk);
+                            accumulatedResponse += chunk.text_chunk;
+                        }
+                        if (chunk.is_final_chunk) {
+                            console.log(); // Final newline
+                            if (chunk.finish_reason && chunk.finish_reason !== 'STOP') {
+                                console.warn(chalk.yellow(`\nStream finished with reason: ${chunk.finish_reason}`));
+                            }
+                        }
+                    });
+
+                    currentCall.on('end', () => {
+                        finishedCleanly = true;
+                        if (!receivedError && accumulatedResponse) {
+                             history.push(userMessage);
+                             history.push({ role: 'model', parts: [{ text: accumulatedResponse }] });
+                        } else {
+                            history.push(userMessage);
+                        }
+                        currentCall = null;
+                        resolve();
+                    });
+
+                    currentCall.on('error', (err: grpc.ServiceError) => {
+                        if (err.code !== grpc.status.CANCELLED) {
+                            console.error(chalk.red('\ngRPC Stream Error:'), err.details || err.message);
+                            history.push(userMessage);
+                        }
+                        receivedError = true; 
+                        currentCall = null;
+                        if (err.code !== grpc.status.CANCELLED) { reject(err); } else { resolve(); }
+                    });
+
+                    currentCall.on('status', (status: grpc.StatusObject) => {
+                        if (status.code !== grpc.status.OK && status.code !== grpc.status.CANCELLED) {
+                            console.error(chalk.yellow(`\ngRPC Stream Status Error: ${status.details}`));
+                        }
+                    });
+                }); // End promise
+
+            } catch (error: unknown) {
+                if (error instanceof Error && error.message !== 'Failed to initiate gRPC stream call.') {
+                     console.error(chalk.red('Error processing stream call:'), error.message);
+                } else if (!(error instanceof Error)) {
+                    console.error(chalk.red('Unknown error processing stream call'), error);
+                }
+            }
+        } // End while loop
+    } catch (error) {
+        // Catch potential errors from prompts itself if not handled by onCancel
+        console.error(chalk.red('An unexpected error occurred:'), error);
+    }
+     // No rl.close() needed
+     // Ensure final cancellation if main loop errors
      if (currentCall) {
-        currentCall.cancel();
-        currentCall = null;
+            currentCall.removeAllListeners();
+            currentCall.cancel();
      }
-
-    rl.question(chalk.blue('User: '), (input) => {
-      if (input.toLowerCase() === 'exit') {
-        console.log(chalk.cyan('Exiting chat session.'));
-        if (currentCall) currentCall.cancel();
-        rl.close();
-        return;
-      }
-
-      try {
-        console.log(chalk.green('Model: ')); // Print header before streaming
-
-        const userMessage: ProtoHistoryItem = { role: 'user', parts: [{ text: input }] };
-
-        const request = {
-          prompt: input,
-          history: history, // Send previous history
-        };
-
-        // Assign to outer variable for cancellation tracking
-        currentCall = client.streamChat(request, metadata);
-
-        // Explicitly check if the call object was created successfully
-        if (!currentCall) {
-          console.error(chalk.red('Failed to initiate gRPC stream call.'));
-          // Add user message to history even if call failed?
-          history.push(userMessage);
-          currentCall = null; // Ensure state is clean
-          promptUser(); // Ask for next input
-          return; // Exit current try block
-        }
-        
-        // Use a local non-null variable for attaching listeners immediately
-        const call = currentCall; 
-        
-        let accumulatedResponse = '';
-        let receivedError = false;
-
-        // Attach listeners using the local 'call' variable
-        call.on('data', (chunk: any) => {
-             if (chunk.error) {
-                console.error(chalk.red(`\nServer Stream Error: ${chunk.error}`));
-                receivedError = true;
-                // Continue listening or cancel?
-            } else if (chunk.text_chunk) {
-                process.stdout.write(chunk.text_chunk);
-                accumulatedResponse += chunk.text_chunk;
-            }
-            if (chunk.is_final_chunk) {
-                 console.log(); // Final newline
-                 if (chunk.finish_reason && chunk.finish_reason !== 'STOP') {
-                     console.warn(chalk.yellow(`\nStream finished with reason: ${chunk.finish_reason}`));
-                 }
-                 // History update happens on 'end' or 'status' normally
-            }
-        });
-
-        call.on('end', () => {
-            console.log(); // Ensure newline
-            if (!receivedError && accumulatedResponse) {
-                 // Add user message AND successful model response to history
-                 history.push(userMessage);
-                 history.push({ role: 'model', parts: [{ text: accumulatedResponse }] });
-            } else if (!receivedError && !accumulatedResponse) {
-                 // Model produced no output but no error - add user msg?
-                 history.push(userMessage);
-            } else {
-                 // Error occurred, only add user message?
-                 history.push(userMessage);
-            }
-            currentCall = null; // Reset outer variable
-            promptUser(); // Continue conversation
-        });
-
-        call.on('error', (err: grpc.ServiceError) => {
-            console.error(chalk.red('\ngRPC Stream Error:'), err.details || err.message);
-            receivedError = true; // Mark error occurred
-             // Add user message to history even on error?
-            history.push(userMessage);
-            // Still cancel using the outer variable reference if needed, though call might be implicitly ended
-            if (currentCall) currentCall.cancel(); 
-            currentCall = null; // Reset outer variable
-            promptUser(); // Continue conversation even on error
-        });
-
-         call.on('status', (status: grpc.StatusObject) => {
-            if (status.code !== grpc.status.OK) {
-                console.error(chalk.yellow(`\ngRPC Stream Status Error: ${status.details}`));
-                // If end hasn't been called yet, handle history here?
-                // This might overlap with 'error' handler.
-            }
-        });
-
-      } catch (error: unknown) {
-        if (error instanceof Error) {
-          console.error(chalk.red('Error setting up stream call:'), error.message);
-        } else {
-          console.error(chalk.red('Unknown error setting up stream call'), error);
-        }
-        if (currentCall) currentCall.cancel();
-        currentCall = null;
-        promptUser(); // Continue loop even if setup fails
-      }
-    });
-  };
-
-  promptUser(); // Start the interactive loop
 }
