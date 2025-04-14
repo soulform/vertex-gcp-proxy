@@ -113,7 +113,7 @@ Error: Error applying IAM policy for cloudrunv2 service ... googleapi: Error 400
         # For production, consider using Secret Manager instead of putting the key here.
         EXPECTED_API_KEY = "YOUR_SECRET_STATIC_API_KEY_HERE" # Use a strong, unique key
         ```
-    *   **IMPORTANT:** Add `*.tfvars` to your `.gitignore` file.
+    *   **IMPORTANT:** Add `*.tfvars` to your `.gitignore` file (Crucial for security!).
     *   Review `terraform/variables.tf` for other optional configuration.
 
 3.  **Initialize Terraform:**
@@ -151,7 +151,8 @@ Error: Error applying IAM policy for cloudrunv2 service ... googleapi: Error 400
         ```
     *   Build the image (run from project root):
         ```bash
-        # Ensure Dockerfile uses Gen2 base image if necessary, though node:20-slim should work
+        # Use --platform linux/amd64 to ensure compatibility with Cloud Run's amd64 architecture,
+        # especially if building on ARM-based machines (e.g., M1/M2 Macs).
         docker build --platform linux/amd64 -t ${REPO_URL}/vertex-proxy:latest .
         ```
     *   Push the image:
@@ -324,7 +325,7 @@ The project includes a command-line interface (`src/cli/`) for interacting with 
         # Navigate to the project root directory first
         npm link
         ```
-    *   Now you can use it from anywhere (requires `src/cli/.env` file to be present relative to execution, or vars set globally):
+    *   Now you can use it from anywhere. Note: It will look for the src/cli/.env file relative to your current working directory, or use globally set GRPC_TARGET/API_KEY environment variables if the .env file is not found.
         ```bash
         vertex-cli chat -p "Hello, Gemini via gRPC!"
         ```
